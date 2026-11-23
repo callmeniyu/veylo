@@ -1,17 +1,17 @@
 // src/App.tsx
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import ProtectedRoute from './components/ProtectedRoute';
-import MainLayout from './layouts/MainLayout';
-import Landing from './pages/Landing';
-import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import Staff from './pages/Staff';
-import Customers from './pages/Customers';
-import Pricing from './pages/Pricing';
-import Insights from './pages/Insights';
-import Activity from './pages/Activity';
-import Settings from './pages/Settings';
-import Search from './pages/Search';
+import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import ProtectedRoute from "./components/ProtectedRoute";
+import MainLayout from "./layouts/MainLayout";
+import Landing from "./pages/Landing";
+import Login from "./pages/Login";
+import Dashboard from "./pages/Dashboard";
+import Staff from "./pages/Staff";
+import Customers from "./pages/Customers";
+import Pricing from "./pages/Pricing";
+import Insights from "./pages/Insights";
+import Activity from "./pages/Activity";
+import Settings from "./pages/Settings";
+import Search from "./pages/Search";
 
 function App() {
   return (
