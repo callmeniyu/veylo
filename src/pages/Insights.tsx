@@ -1,128 +1,326 @@
-import { useMemo, useState } from 'react';
-import useAsync from '../hooks/useAsync';
-import { api } from '../services/mockApi';
-import type { Customer } from '../types';
+// src/pages/Insights.tsx
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import {
+  TrendingUp,
+  Info,
+} from 'lucide-react';
+import {
+  customerService,
+  analyticsService,
+  VEYLO_DATA_CHANGED_EVENT,
+} from '../services/dataService';
+import type { UsagePoint } from '../types';
 import { Line, Bar, Doughnut } from 'react-chartjs-2';
 
-type UsagePoint = { date: string; users: number; featureA: number; featureB: number; featureC: number };
-type UsageResponse = { points: UsagePoint[] };
+const nf = new Intl.NumberFormat();
+const currFmt = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 0,
+});
 
-const RangeButton = ({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) => (
-  <button onClick={onClick} className={`px-3 py-1 rounded ${active ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 border'}`}>{children}</button>
-);
+export default function Insights() {
+  const [metrics, setMetrics] = useState(() => customerService.getMetrics());
 
-const Insights = () => {
-  const [days, setDays] = useState(30);
-  const [view, setView] = useState<'growth'|'usage'>('growth');
+  const refresh = useCallback(() => {
+    setMetrics(customerService.getMetrics());
+  }, []);
 
-  // users for summary
-  const { data: customersData = [] } = useAsync(() => api.getCustomers(), []);
-    const users: Customer[] = useMemo(() => (customersData ?? []) as Customer[], [customersData]);
+  useEffect(() => {
+    window.addEventListener(VEYLO_DATA_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(VEYLO_DATA_CHANGED_EVENT, refresh);
+  }, [refresh]);
 
-  // usage data
-  const { data: usageData, loading } = useAsync<UsageResponse>(() => api.getUsage({ days }), [days]);
+  const [dateRange, setDateRange] = useState<number>(30);
+  const [planFilter, setPlanFilter] = useState<string>('All');
+  const [chartView, setChartView] = useState<'activity' | 'features'>('activity');
 
-    const points = useMemo(() => (usageData?.points ?? []), [usageData]);
+  const timeSeries: UsagePoint[] = useMemo(() => {
+    return analyticsService.getTimeSeries(dateRange, planFilter);
+  }, [dateRange, planFilter]);
 
+  // Aggregate stats over selected window
+  const aggregates = useMemo(() => {
+    const totalUsers = timeSeries.length > 0 ? timeSeries[timeSeries.length - 1].users : 0;
+    const totalApi = timeSeries.reduce((s, p) => s + p.apiRequests, 0);
+    const totalWorkflows = timeSeries.reduce((s, p) => s + p.workflowsRun, 0);
+    const totalReports = timeSeries.reduce((s, p) => s + p.reportsGenerated, 0);
 
-  const totals = useMemo(() => {
-    const list = users ?? [];
-    const total = list.reduce((s: number, c: Customer) => s + (c.seats ?? 0), 0);
-    const activeDAU = Math.floor(total * 0.6); // estimate DAU as 60% of total seats
-    const activeWAU = list.filter(u => (Date.now() - new Date(u.lastActive).getTime()) < 7*24*60*60*1000).length;
-    const paid = list.filter(u => u.plan !== 'Free').length;
-    const conversion = total ? Math.round((paid / total) * 100) : 0;
-    return { total, activeDAU, activeWAU, paid, conversion };
-  }, [users]);
+    const firstPoint = timeSeries.length > 0 ? timeSeries[0].users : 1;
+    const lastPoint = timeSeries.length > 0 ? timeSeries[timeSeries.length - 1].users : 1;
+    const growthPercent = Math.round(((lastPoint - firstPoint) / Math.max(1, firstPoint)) * 100);
 
-
-  // Line chart data (user growth)
-  const growthData = useMemo(() => {
-    const arr = points ?? [];
     return {
-      labels: arr.map(p => new Date(p.date).toLocaleDateString()),
-      datasets: [{ label: 'Active users', data: arr.map(p => p.users), borderColor: '#2563EB', backgroundColor: 'rgba(37,99,235,0.08)', tension: 0.25, fill: true }],
+      totalUsers,
+      totalApi,
+      totalWorkflows,
+      totalReports,
+      growthPercent,
     };
-  }, [points]);
+  }, [timeSeries]);
 
-  // Bar chart: feature usage totals for range
-  const featureTotals = useMemo(() => {
-    const arr = points ?? [];
-    const totals = arr.reduce((acc, p) => {
-      acc.A += p.featureA; acc.B += p.featureB; acc.C += p.featureC; return acc;
-    }, { A: 0, B: 0, C: 0 });
-    return totals;
-  }, [points]);
-
-  const featureData = {
-    labels: ['Feature A', 'Feature B', 'Feature C'],
-    datasets: [{ label: 'Events', data: [featureTotals.A, featureTotals.B, featureTotals.C], backgroundColor: ['#60A5FA','#34D399','#F59E0B'] }],
+  // Telemetry Line Chart
+  const lineChartData = {
+    labels: timeSeries.map(p => {
+      const parts = p.date.split('-');
+      return `${parts[1]}/${parts[2]}`;
+    }),
+    datasets: [
+      {
+        label: 'Active Users (DAU)',
+        data: timeSeries.map(p => p.users),
+        borderColor: '#4F46E5',
+        backgroundColor: 'rgba(79, 70, 229, 0.08)',
+        fill: true,
+        tension: 0.3,
+      },
+    ],
   };
 
-  const planCounts = useMemo(() => {
-    const list = users ?? [];
-    const map: Record<string, number> = { Free: 0, Pro: 0, Business: 0 };
-    list.forEach((u: Customer) => map[u.plan]++);
-    return map;
-  }, [users]);
+  // Feature Breakdown Bar Chart
+  const featureBarData = {
+    labels: ['API Requests (k)', 'Workflow Triggers (k)', 'Reports Generated (k)'],
+    datasets: [
+      {
+        label: 'Volume',
+        data: [
+          Math.round(aggregates.totalApi / 1000),
+          Math.round(aggregates.totalWorkflows / 1000),
+          Math.round(aggregates.totalReports / 1000),
+        ],
+        backgroundColor: ['#6366F1', '#06B6D4', '#10B981'],
+        borderRadius: 8,
+      },
+    ],
+  };
 
-  const donutData = {
-    labels: ['Free','Pro','Business'],
-    datasets: [{ data: [planCounts.Free, planCounts.Pro, planCounts.Business], backgroundColor: ['#E5E7EB', '#60A5FA', '#7C3AED'] }],
+  // Subscription Breakdown Doughnut
+  const doughnutData = {
+    labels: ['Enterprise', 'Business', 'Pro', 'Free'],
+    datasets: [
+      {
+        data: [
+          metrics.planCounts.Enterprise,
+          metrics.planCounts.Business,
+          metrics.planCounts.Pro,
+          metrics.planCounts.Free,
+        ],
+        backgroundColor: ['#7C3AED', '#4F46E5', '#38BDF8', '#94A3B8'],
+        borderColor: 'transparent',
+      },
+    ],
   };
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold text-gray-800 dark:text-white">Product Insights</h1>
-        <div className="flex items-center gap-2 text-gray-800 dark:text-white">
-          <RangeButton active={days===7} onClick={() => setDays(7)}>7d</RangeButton>
-          <RangeButton active={days===30} onClick={() => setDays(30)}>30d</RangeButton>
-          <RangeButton active={days===90} onClick={() => setDays(90)}>90d</RangeButton>
-          <div className="ml-4">
-            <button className={`px-3 py-1 rounded ${view==='growth' ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 border'}`} onClick={() => setView('growth')}>Growth</button>
-            <button className={`px-3 py-1 ml-2 rounded ${view==='usage' ? 'bg-blue-600 text-white' : 'bg-white dark:bg-gray-800 border'}`} onClick={() => setView('usage')}>Usage</button>
+    <div className="space-y-6">
+      {/* Page Title & Controls */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+            Product & Telemetry Analytics
+          </h1>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            Usage trends, multi-tenant adoption, and feature engagement metrics derived from local tenant data.
+          </p>
+        </div>
+
+        {/* Date and Segment Filters */}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Plan Filter */}
+          <select
+            value={planFilter}
+            onChange={e => setPlanFilter(e.target.value)}
+            className="px-2.5 py-1.5 text-xs bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-hidden"
+          >
+            <option value="All">All Plans</option>
+            <option value="Enterprise">Enterprise Only</option>
+            <option value="Business">Business Only</option>
+            <option value="Pro">Pro Only</option>
+            <option value="Free">Free Only</option>
+          </select>
+
+          {/* Time range pill buttons */}
+          <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-1 text-xs">
+            {[7, 30, 90, 365].map(days => (
+              <button
+                key={days}
+                onClick={() => setDateRange(days)}
+                className={`px-3 py-1 rounded-lg font-medium transition-all ${
+                  dateRange === days
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                {days === 365 ? '1y' : `${days}d`}
+              </button>
+            ))}
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div className="md:col-span-3 grid grid-cols-1 gap-4">
-          <div className="p-4 bg-white dark:bg-gray-800 rounded shadow flex justify-between">
+      {/* Synthetic Demo Label Alert */}
+      <div className="p-3.5 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200/60 dark:border-indigo-800/60 text-xs text-indigo-900 dark:text-indigo-200 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Info className="w-4 h-4 text-indigo-600 dark:text-indigo-400 flex-shrink-0" />
+          <span>
+            <strong>Demo Analytics:</strong> Usage telemetry is mathematically modeled from your {metrics.total} customer accounts ({metrics.totalSeats} total seats) across the selected {dateRange}-day window.
+          </span>
+        </div>
+        <span className="text-[10px] font-mono uppercase bg-indigo-200/60 dark:bg-indigo-900/60 px-2 py-0.5 rounded text-indigo-800 dark:text-indigo-300 font-bold flex-shrink-0">
+          Synthetic
+        </span>
+      </div>
+
+      {/* Aggregate KPI Summary Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs">
+          <span className="text-xs text-slate-500 dark:text-slate-400">Current Active DAU</span>
+          <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1">
+            {nf.format(aggregates.totalUsers)}
+          </div>
+          <span className="text-[10px] text-emerald-500 font-medium flex items-center mt-1">
+            <TrendingUp className="w-3 h-3 mr-1" />
+            +{aggregates.growthPercent}% trend over {dateRange} days
+          </span>
+        </div>
+
+        <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs">
+          <span className="text-xs text-slate-500 dark:text-slate-400">Total API Invocations</span>
+          <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1">
+            {nf.format(aggregates.totalApi)}
+          </div>
+          <span className="text-[10px] text-indigo-500 font-medium block mt-1">
+            Avg {Math.round(aggregates.totalApi / dateRange).toLocaleString()} requests / day
+          </span>
+        </div>
+
+        <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs">
+          <span className="text-xs text-slate-500 dark:text-slate-400">Automated Workflows</span>
+          <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1">
+            {nf.format(aggregates.totalWorkflows)}
+          </div>
+          <span className="text-[10px] text-cyan-500 font-medium block mt-1">
+            High automation frequency
+          </span>
+        </div>
+
+        <div className="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs">
+          <span className="text-xs text-slate-500 dark:text-slate-400">Telemetry Export Reports</span>
+          <div className="text-2xl font-bold text-slate-900 dark:text-white mt-1">
+            {nf.format(aggregates.totalReports)}
+          </div>
+          <span className="text-[10px] text-emerald-500 font-medium block mt-1">
+            Generated by tenant admins
+          </span>
+        </div>
+      </div>
+
+      {/* Main Charts Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Interactive Time Series Chart (2 cols) */}
+        <div className="lg:col-span-2 p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs">
+          <div className="flex items-center justify-between mb-4">
             <div>
-              <div className="text-sm text-gray-500">Total users</div>
-              <div className="mt-1 text-2xl font-semibold text-gray-800 dark:text-white">{totals.total}</div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                Daily Active Engagement ({dateRange}d)
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Segment: {planFilter} plans • Responsive to date range selection
+              </p>
             </div>
-            <div className="text-right">
-              <div className="text-sm text-gray-500">Active (DAU)</div>
-              <div className="mt-1 text-2xl font-semibold text-gray-800 dark:text-white">{totals.activeDAU}</div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setChartView('activity')}
+                className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-colors ${
+                  chartView === 'activity'
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                Line View
+              </button>
+              <button
+                onClick={() => setChartView('features')}
+                className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-colors ${
+                  chartView === 'features'
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                Features View
+              </button>
             </div>
           </div>
 
-          <div className="p-4 bg-white dark:bg-gray-800 rounded shadow">
-            {loading && <div className="text-gray-500">Loading charts…</div>}
-            {!loading && view === 'growth' && <Line data={growthData} />}
-            {!loading && view === 'usage' && <Bar data={featureData} />}
+          <div className="h-72">
+            {chartView === 'activity' ? (
+              <Line
+                data={lineChartData}
+                options={{
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  plugins: { legend: { display: false } },
+                  scales: {
+                    x: { grid: { display: false } },
+                    y: { beginAtZero: false },
+                  },
+                }}
+              />
+            ) : (
+              <Bar
+                data={featureBarData}
+                options={{
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  plugins: { legend: { display: false } },
+                  scales: { x: { grid: { display: false } } },
+                }}
+              />
+            )}
           </div>
         </div>
 
-        <div className="p-4 bg-white dark:bg-gray-800 rounded shadow">
-          <div className="flex items-center justify-between">
-            <div className="text-sm text-gray-500">Subscription distribution</div>
-            <div className="text-sm font-semibold text-gray-700 dark:text-white">{totals.conversion}% paid</div>
+        {/* Subscription Distribution Breakdown */}
+        <div className="p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs flex flex-col justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white mb-1">
+              Active Tier Allocation
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+              Real-time customer share across tiers
+            </p>
+            <div className="h-48 flex items-center justify-center">
+              <Doughnut
+                data={doughnutData}
+                options={{
+                  responsive: true,
+                  maintainAspectRatio: false,
+                  plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } },
+                }}
+              />
+            </div>
           </div>
 
-          <div className="mt-4">
-            <Doughnut data={donutData} />
-          </div>
-
-          <div className="mt-4 text-sm text-gray-500">
-            <div>Paid users: <strong className="text-gray-800 dark:text-white">{totals.paid}</strong></div>
+          <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2 text-xs">
+            <div className="flex justify-between text-slate-600 dark:text-slate-400">
+              <span>Enterprise Tier ({metrics.planCounts.Enterprise})</span>
+              <strong className="text-slate-900 dark:text-white">{currFmt.format(metrics.planCounts.Enterprise * 499)}/mo</strong>
+            </div>
+            <div className="flex justify-between text-slate-600 dark:text-slate-400">
+              <span>Business Tier ({metrics.planCounts.Business})</span>
+              <strong className="text-slate-900 dark:text-white">{currFmt.format(metrics.planCounts.Business * 199)}/mo</strong>
+            </div>
+            <div className="flex justify-between text-slate-600 dark:text-slate-400">
+              <span>Pro Tier ({metrics.planCounts.Pro})</span>
+              <strong className="text-slate-900 dark:text-white">{currFmt.format(metrics.planCounts.Pro * 49)}/mo</strong>
+            </div>
+            <div className="flex justify-between text-slate-600 dark:text-slate-400">
+              <span>Free Tier ({metrics.planCounts.Free})</span>
+              <strong className="text-slate-900 dark:text-white">$0/mo</strong>
+            </div>
           </div>
         </div>
       </div>
     </div>
   );
-};
-
-export default Insights;
+}
